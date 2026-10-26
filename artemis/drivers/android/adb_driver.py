@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 from adbutils import AdbClient, AdbDevice
 from artemis.config.paths import get_temp_dir
+from artemis.drivers.android.ai_cursor import fire_ai_cursor
 from artemis.drivers.base import BaseDeviceDriver, KeyCode, ScreenData, SwipeDirection
 from artemis.toolchain import find_ffmpeg, find_scrcpy
 from artemis.utils.video import build_scrcpy_record_command
@@ -244,6 +245,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
                     taps = [f"input tap {x} {y}"] * times
                     cmd = f" && sleep {delay_ms / 1000.0:.3f} && ".join(taps)
 
+            fire_ai_cursor(self._device_id, x, y)
             logger.info(f"[ADB] {cmd}")
             await asyncio.to_thread(self.device.shell, cmd)
             return True
@@ -264,6 +266,7 @@ class AndroidAdbDriver(BaseDeviceDriver):
     ) -> bool:
         try:
             cmd = f"input swipe {start_x} {start_y} {end_x} {end_y} {duration_ms}"
+            fire_ai_cursor(self._device_id, start_x, start_y)
             logger.info(f"[ADB] {cmd}")
             await asyncio.to_thread(self.device.shell, cmd)
             return True

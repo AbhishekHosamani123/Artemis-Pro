@@ -37,6 +37,8 @@
 * **Multimodal Targeting**: Uses element indices when available, with coordinate and visual locating fallbacks for custom interfaces.
 * **IDE Diagnostics**: **Model Context Protocol (MCP)** integration lets **Antigravity, Claude Code, and Windsurf** drive test devices and collect **Logcat** output and screenshots.
 * **Flash Execution**: A reactive observe-and-act loop with asynchronous history summaries, typically **3–5s per step**.
+* **Laya Decision Engine**: Millisecond semantic element matching and history recall (free local backends, opt-in API backends) so paraphrased targets resolve without extra VLM rounds.
+* **On-Device AI Cursor**: A glowing blue pointer with an **AI** tag drawn on the phone itself at every tap and swipe — watch the agent work live on the device, whether the task comes from the CLI, the web console, or an IDE over MCP (`ARTEMIS_AI_CURSOR=true` by default).
 * **Pro Exploration**: Checks targets before individual actions and returns blocked actions to the Operator for recovery. Supports long-running exploratory and stability tests.
 * **AndroidWorld Results**: **99%+ task completion** on Google Research's **AndroidWorld** benchmark (100+ multi-step tasks).
 
@@ -296,6 +298,35 @@ ARTEMIS supports two execution profiles tailored for different automation requir
 
 * **Flash Profile (`--profile flash`)**: Fast and token-efficient reactive loop (~3–5s per step): one model observes the live screen, thinks, and acts, with no graph orchestration. Ideal for routine, deterministic UI tasks. The loop is unbounded by default (`agent.flash.max_turns`, 0 = unlimited) because history is compressed rather than capped: Flash shares the Pro session transcript ledger (session-relative `T+mm:ss` clock, screenshots folded into visual summaries, older steps chunked into eras and recallable on demand via `search_history` / `replay_steps`) and can query the session recording through `video_analyzer`. Transient UI (auto-fading control bars, toasts) is handled by chaining taps into one `click_sequence`. *Limitations*: No task plan or notes, no pre-execution safety net, no checkpoint verification or final report, and no ADB shell.
 * **Pro Profile (`--profile pro`)**: A planning and verification workflow (~15–40s per step), built as a multi-agent graph. A **Planner** maintains a living Markdown task plan with milestones and `verify` / `assert` check items; the **Operator** executes it with the full toolset (Explorer grounding whose `flash` / `pro` / `ultra` tier is a user setting per profile — `pro.explorer.mode` / `flash.explorer_mode` in `config/artemis.jsonc` or `--explorer-pro-mode` — never chosen by the agent; notes, history recall, video analysis, ADB diagnostics). Every single action passes a pre-execution **Safety Net** (XML-first, pixel fallback), while multi-action **fast-action bursts** fire back to back to beat turn latency on transient UI. A blocked or failed action opens an **execution incident** that stays in the Operator's context until a later action succeeds, so recovery is handled by the Operator itself with no separate repair agent. A read-only **Checker** verifies plan checkpoints and runs an exit final review against the original goal (`--verification-level`: `off` / `final` (default) / `checkpoints` / `strict`), and plan milestone edits get an advisory review. Handles 100+ step long-horizon workflows, `[Loop:continuous]` monitoring, and an optional written report.
+
+<a id="laya-decision-engine"></a>
+## ⚡ Laya Decision Engine: Millisecond Semantic Matching
+
+Every step, ARTEMIS answers dozens of tiny relevance questions — *which UI label matches "power options"?*, *which past step enabled WiFi?* A full LLM/VLM turn costs seconds; the built-in **decision engine** answers them in milliseconds, rescuing paraphrased targets that plain lexical matching misses before they escalate to a VLM grounding round:
+
+* **Element search**: when `search_ui` / `ask_perception_tool` finds nothing or is unsure, all screen labels are rescored by the active backend and confident paraphrase matches ("power options" → "Battery") are surfaced directly.
+* **History recall**: when `search_history` keyword search comes up empty, step summaries are recalled by meaning instead.
+* **Upgraded lexical floor**: token + trigram similarity now tolerates word order ("save battery" ≈ "battery saver"), filler words and punctuation noise — even with no model configured.
+
+Backends (set `ARTEMIS_DECISION_BACKEND` in `.env`; default `auto` never spends API tokens):
+
+| Backend | What it is | Cost / latency |
+| --- | --- | --- |
+| `auto` (default) | A running [Laya](https://github.com/mizorewww/laya-mlx) server if present, else lexical | free · ms |
+| `laya` | [laya-mlx](https://github.com/mizorewww/laya-mlx) "System One" server (421M encoder, one forward pass per question; Apple Silicon hosts serve `127.0.0.1:8081` — point `ARTEMIS_LAYA_URL` at remote hosts) | free · ~7–15 ms/question |
+| `openai` | One small selection call per rescue on any OpenAI-compatible endpoint (`OPENAI_API_KEY` / `OPENAI_BASE_URL`, model `ARTEMIS_DECISION_OPENAI_MODEL`) | ~⅒ ¢ / rescue · sub-second |
+| `lexical` / `off` | Local scorer only / disabled | free · µs |
+
+Check status and score sample pairs live: `uv run artemis laya --benchmark`.
+
+<a id="ai-cursor"></a>
+## 👆 On-Device AI Cursor
+
+When ARTEMIS drives a phone, the bundled Accessibility Helper (v1.3.0+) draws a **glowing blue "AI" cursor** on the device screen at every point the agent is about to touch — with a pop-in animation and an expanding tap ring. A human watching the phone sees exactly where the agent looks and taps, which makes demos, debugging and sign-off reviews trivial. It works for every entry point (CLI `artemis run`, the web console, and MCP tools like `mobile_run_task`), costs no action latency (drawn from a background thread), and never intercepts touches.
+
+* Disable it: `ARTEMIS_AI_CURSOR=false` in `.env`
+* It requires the helper backend (the default hierarchy backend); with `ARTEMIS_HIERARCHY_BACKEND=uiautomator` it stays off
+* Drawn via `TYPE_ACCESSIBILITY_OVERLAY` — no overlay permission, no touch interception; remove the helper any time with `artemis helper uninstall`
 
 ## Roadmap
 

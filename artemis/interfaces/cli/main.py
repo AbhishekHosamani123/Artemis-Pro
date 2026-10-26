@@ -21,6 +21,7 @@ from artemis.interfaces.cli.commands.batch import batch_command
 from artemis.interfaces.cli.commands.doctor import doctor_command
 from artemis.interfaces.cli.commands.helper import helper_app
 from artemis.interfaces.cli.commands.init import init_command
+from artemis.interfaces.cli.commands.laya import laya_command
 from artemis.interfaces.cli.commands.mcp import mcp_command
 from artemis.interfaces.cli.commands.run import run_command
 from artemis.interfaces.cli.commands.server import server_app
@@ -60,6 +61,10 @@ app.command(name="init", help="Interactive quickstart wizard to configure API ke
 app.command(name="doctor", help="Check system prerequisites, device status, and configuration.")(
     doctor_command
 )
+app.command(
+    name="laya",
+    help="Show Laya decision-engine status (fast semantic search backends); --benchmark to score sample pairs.",
+)(laya_command)
 app.command(name="batch", help="Execute a batch sequence of automation tasks.")(batch_command)
 app.command(name="mcp", help="Start the Artemis Model Context Protocol (MCP) server.")(mcp_command)
 app.add_typer(server_app, name="server", help="Cloud Run proxy and web dashboard server.")

@@ -20,7 +20,9 @@ results, reasoning, the tool calls a step made (name, arguments, result
 text), notes, the OCR/UI-tree text of the step's pre and post screenshots
 (which also carries package/activity strings) plus any screenshot a tool
 result embedded, and the foreground-app stamp. Keyword + step-range filtering
-in Python; no vector database, no model call.
+in Python; no vector database, no model call on the happy path — when a
+keyword search comes up empty, the Laya decision engine (if a semantic
+backend is active) recalls steps by meaning as a fallback.
 
 Hard boundaries (config ``agent.memory.recall``):
 
@@ -400,6 +402,60 @@ def _parse_range(step_range: list[int] | None) -> tuple[int | None, int | None]:
     return start, end
 
 
+#: How many semantic-recall hits to surface when keyword search found none.
+SEMANTIC_RECALL_HITS = 3
+
+
+def _semantic_recall(reader: Any, query: str, scoped_steps: list[dict]) -> list[tuple[int, int, str]]:
+    """Recall steps by meaning when keyword search found nothing.
+
+    Scores recent step summaries with the Laya decision engine; inactive or
+    failing engines contribute nothing, keeping the search surface purely
+    lexical as before. Results carry the same ``(score, step_number, text)``
+    shape as keyword hits (scores scaled ×10 so the shared sort applies).
+    """
+    try:
+        from artemis.decisions.engine import get_decision_engine
+
+        engine = get_decision_engine()
+        if not engine.semantic:
+            return []
+        candidates: list[tuple[dict, str]] = []
+        for step in reversed(scoped_steps):
+            summary = str(step.get("summary") or "").strip()
+            if summary:
+                candidates.append((step, summary))
+            if len(candidates) >= engine.rescue_limit:
+                break
+        if not candidates:
+            return []
+        scores = engine.rank(query, [summary for _, summary in candidates])
+        hits = [
+            (float(score), step, summary)
+            for (step, summary), score in zip(candidates, scores)
+            if float(score) >= engine.min_confidence
+        ]
+        hits.sort(key=lambda hit: -hit[0])
+        session_start = getattr(reader, "session_start_time", None)
+        results: list[tuple[int, int, str]] = []
+        for score, step, summary in hits[:SEMANTIC_RECALL_HITS]:
+            lines = [
+                f"[{_step_label(step, session_start)} | id {step.get('step_id')}"
+                f" | semantic recall via {engine.backend_name}]",
+                f"  Match: {_clamp(summary, EXCERPT_CHARS)}",
+            ]
+            results.append(
+                (int(round(score * 10)), step.get("step_number") or 0, "\n".join(lines))
+            )
+        logger.debug(
+            f"semantic recall matched {len(results)}/{len(candidates)} summaries for {query!r}"
+        )
+        return results
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug(f"semantic history recall skipped: {exc}")
+        return []
+
+
 # pylint: disable=too-many-branches,too-many-locals,too-many-statements
 def search_history_text(
     reader: Any,
@@ -541,10 +597,15 @@ def search_history_text(
                 )
             )
 
+    # --- Semantic recall fallback: keyword search came up empty, so ask the
+    # Laya decision engine (when a semantic backend is active) which step
+    # summaries mean the same thing as the query.
+    if terms and not results:
+        results.extend(_semantic_recall(reader, query, scoped_steps))
+
     results.sort(key=lambda r: (-r[0], -r[1]))
     kept = results[:max_results]
     dropped = len(results) - len(kept)
-
     if kept:
         header = f"Top {len(kept)} match(es) for {terms}:"
         if dropped > 0:

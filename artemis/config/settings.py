@@ -120,6 +120,11 @@ class Settings(BaseSettings):
     # it holds. False = only attach to a helper installed by `artemis helper install`.
     ARTEMIS_HELPER_AUTO_INSTALL: bool = Field(default=True)
 
+    # On-device "AI cursor": a glowing blue pointer with an "AI" tag the helper
+    # draws at every point the agent touches, so humans can follow along.
+    # Requires the helper backend (the default hierarchy backend); disable with false.
+    ARTEMIS_AI_CURSOR: bool = Field(default=True)
+
     # Execution Defaults
     PROJECT_NAME: str | None = None
     ARTEMIS_DEFAULT_PROFILE: str = Field(default=DEFAULT_PROFILE)
@@ -133,6 +138,51 @@ class Settings(BaseSettings):
             "Environment-level override for Explorer context caching; unset"
             " defers to the agent configuration and the tier default."
         ),
+    )
+
+    # Laya Decision Engine — millisecond semantic assist for element search
+    # and history recall (see artemis.decisions). `auto` never spends API
+    # tokens: it only uses a running Laya server, else the lexical scorer.
+    ARTEMIS_DECISION_BACKEND: str = Field(
+        default="auto",
+        description=(
+            "auto | laya | openai | lexical | off. `auto` prefers a running"
+            " Laya (laya-mlx) server and otherwise scores locally; `openai`"
+            " opts into one small selection call per rescue on the"
+            " OpenAI-compatible endpoint (OPENAI_API_KEY / OPENAI_BASE_URL)."
+        ),
+    )
+    ARTEMIS_LAYA_URL: str = Field(
+        default="http://127.0.0.1:8081",
+        description=(
+            "Base URL of a laya-mlx 'System One' decision server"
+            " (serves POST /v1/systemone); may point at another machine."
+        ),
+    )
+    ARTEMIS_LAYA_API_KEY: SecretStr | None = Field(
+        default=None, description="Optional bearer token for the Laya server."
+    )
+    ARTEMIS_DECISION_MODEL: str = Field(
+        default="laya-421m", description="Model id the Laya server must serve."
+    )
+    ARTEMIS_DECISION_OPENAI_MODEL: str = Field(
+        default="gemini-3.6-flash",
+        description=(
+            "Chat model used by the `openai` decision backend; pick a fast,"
+            " cheap model your endpoint actually serves."
+        ),
+    )
+    ARTEMIS_DECISION_TIMEOUT: float = Field(
+        default=3.0,
+        description="Per-request timeout (seconds) for decision-engine backends.",
+    )
+    ARTEMIS_DECISION_MIN_CONFIDENCE: float = Field(
+        default=0.72,
+        description="Semantic scores below this never surface as matches.",
+    )
+    ARTEMIS_DECISION_RESCUE_LIMIT: int = Field(
+        default=120,
+        description="Maximum candidates scored in one semantic rescue pass.",
     )
 
     # LLM Reliability

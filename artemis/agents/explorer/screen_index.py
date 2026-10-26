@@ -16,14 +16,16 @@
 
 Built from the fused XML/OCR hierarchy so searches do not depend on the Data
 Engine having persisted the frame. Supports fuzzy text search, exact matches
-and coordinate hit testing.
+and coordinate hit testing. Text search layers the Laya decision engine on
+top: when a semantic backend is active and lexical matching is unsure, all
+labels are rescored so paraphrased targets surface without a VLM round trip.
 """
 
 from dataclasses import dataclass, field
-import difflib
-import re
 from typing import Any, Literal
 
+# ``normalize_text`` is re-exported for compatibility with existing imports.
+from artemis.decisions.lexical import lexical_similarity, normalize_text  # noqa: F401
 from artemis.utils.visualization import parse_bounds
 
 Bounds = tuple[int, int, int, int]
@@ -40,30 +42,14 @@ INTERACTION_KEYS = (
     "selected",
 )
 
-#: Minimum query length for substring matches to count as strong evidence;
-#: shorter fragments ("ok", "a") match far too much.
-_SUBSTRING_MIN_CHARS = 3
-_SUBSTRING_SCORE = 0.85
-
-
-def normalize_text(value: Any) -> str:
-    """Case-folds and collapses whitespace so visually equal labels compare equal."""
-    return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
-
 
 def text_similarity(query: str, text: str) -> float:
     """Similarity in ``[0, 1]`` between a query and an element label.
 
-    Uses the Data Engine's ``SequenceMatcher`` ratio, with a minimum score
-    for substring matches when the query is at least three characters long.
+    Delegates to the decision engine's lexical scorer, which layers token
+    and trigram overlap on top of the historical ``difflib`` ratio.
     """
-    q, t = normalize_text(query), normalize_text(text)
-    if not q or not t:
-        return 0.0
-    ratio = difflib.SequenceMatcher(None, q, t).ratio()
-    if len(q) >= _SUBSTRING_MIN_CHARS and (q in t or t in q):
-        ratio = max(ratio, _SUBSTRING_SCORE)
-    return ratio
+    return lexical_similarity(query, text)
 
 
 def _is_truthy_attr(value: Any) -> bool:
@@ -220,15 +206,71 @@ class ScreenIndex:
     # Queries
     # ------------------------------------------------------------------ #
 
-    def search_text(self, query: str, threshold: float = 0.6, limit: int = 8) -> list[TextMatch]:
-        """Fuzzy label search, best matches first."""
+    def search_text(
+        self,
+        query: str,
+        threshold: float = 0.6,
+        limit: int = 8,
+        decision_engine: Any | None = None,
+    ) -> list[TextMatch]:
+        """Fuzzy label search, best matches first.
+
+        When a semantic ``decision_engine`` (the Laya decision engine) is
+        active and the lexical pass is weak (few matches or no confident
+        top hit), a rescue pass rescores labels across the whole screen so
+        paraphrased targets still surface instead of escalating to a VLM
+        grounding round.
+        """
         matches: list[TextMatch] = []
         for element in self.elements:
             score = text_similarity(query, element.text)
             if score > threshold:
                 matches.append(TextMatch(element=element, score=score, matched_text=element.text))
         matches.sort(key=lambda m: (-m.score, m.element.area))
+        if decision_engine is not None and getattr(decision_engine, "semantic", False):
+            if not matches or matches[0].score < 0.9:
+                matches = self._semantic_rescore(query, matches, threshold, decision_engine)
         return matches[:limit]
+
+    def _semantic_rescore(
+        self,
+        query: str,
+        lexical_matches: list[TextMatch],
+        threshold: float,
+        engine: Any,
+    ) -> list[TextMatch]:
+        """Rescore screen labels with the decision engine; lexical wins ties."""
+        cap = int(getattr(engine, "rescue_limit", 120) or 120)
+        candidates = [match.element for match in lexical_matches]
+        if len(candidates) < cap:
+            seen = {id(element) for element in candidates}
+            for element in self.elements:
+                if len(candidates) >= cap:
+                    break
+                if id(element) not in seen:
+                    candidates.append(element)
+        try:
+            scores = engine.rank(query, [element.text for element in candidates])
+        except Exception:  # engine.rank swallows failures; belt and braces
+            return lexical_matches
+        if len(scores) != len(candidates):
+            return lexical_matches
+
+        min_confidence = float(getattr(engine, "min_confidence", 0.72) or 0.72)
+        lexical_by_element = {match.element: match.score for match in lexical_matches}
+        merged: list[TextMatch] = []
+        for element, semantic_score in zip(candidates, scores):
+            lexical_score = lexical_by_element.get(element, 0.0)
+            semantic_score = float(semantic_score)
+            score = (
+                max(lexical_score, semantic_score)
+                if semantic_score >= min_confidence
+                else lexical_score
+            )
+            if score > threshold:
+                merged.append(TextMatch(element=element, score=score, matched_text=element.text))
+        merged.sort(key=lambda m: (-m.score, m.element.area))
+        return merged or lexical_matches
 
     def exact_matches(self, query: str) -> list[ScreenElement]:
         """Elements whose label equals ``query`` after normalization.

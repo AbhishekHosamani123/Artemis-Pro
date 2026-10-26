@@ -37,6 +37,7 @@ from artemis.agents.image_processor.image_processor import ImageProcessor
 from artemis.agents.object_detector.object_detector import _run_object_detection
 from artemis.config import settings
 from artemis.data_engine.trace import trace
+from artemis.decisions.engine import get_decision_engine
 from artemis.utils.visualization import draw_dots
 from third_party.mobile_use.utils.logger import get_logger
 
@@ -168,15 +169,18 @@ class PerceptionToolsMixin:
         A strict pass (0.7) keeps the answer short when the label is
         unambiguous; when it yields fewer than three hits a lenient pass
         (0.4) is merged in so near-misses (abbreviations, truncated labels)
-        still surface for the model to judge.
+        still surface for the model to judge. Both passes go through the
+        Laya decision engine, which rescues paraphrased targets that pure
+        lexical matching misses when a semantic backend is active.
         """
         if not len(self.screen_index):
             return {"text": NO_UI_TREE_MESSAGE, "image_path": None}
 
-        matches = list(self.screen_index.search_text(query, 0.7))
+        decision_engine = get_decision_engine()
+        matches = list(self.screen_index.search_text(query, 0.7, decision_engine=decision_engine))
         if len(matches) < 3:
             seen = {(m.matched_text, m.element.bounds) for m in matches}
-            for m in self.screen_index.search_text(query, 0.4):
+            for m in self.screen_index.search_text(query, 0.4, decision_engine=decision_engine):
                 key = (m.matched_text, m.element.bounds)
                 if key not in seen:
                     matches.append(m)

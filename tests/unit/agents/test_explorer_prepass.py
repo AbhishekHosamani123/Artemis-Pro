@@ -194,7 +194,12 @@ async def test_search_ui_helper_skips_lenient_pass_with_enough_strict_hits(no_dr
 
     await explorer._search_ui_helper("Settings", prefix="X")
 
-    explorer.screen_index.search_text.assert_called_once_with("Settings", 0.7)
+    explorer.screen_index.search_text.assert_called_once()
+    call = explorer.screen_index.search_text.call_args
+    assert call.args == ("Settings", 0.7)
+    from artemis.decisions.engine import get_decision_engine
+
+    assert call.kwargs == {"decision_engine": get_decision_engine()}
 
 
 @pytest.mark.asyncio

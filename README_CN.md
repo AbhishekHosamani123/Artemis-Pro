@@ -37,6 +37,7 @@
 * **多模态定位**：优先使用元素索引，对自绘界面提供坐标和视觉定位兜底。
 * **IDE 内诊断**：通过 **MCP 协议**，让 **Antigravity、Claude Code、Windsurf** 操作测试设备，收集 **Logcat** 输出和截图。
 * **Flash 执行**：使用观察、执行循环和异步历史摘要，单步通常约 **3–5 秒**。
+* **Laya 决策引擎**：毫秒级语义元素匹配与历史召回（免费本地后端，可选 API 后端），让换一种说法的目标无需额外的视觉定位回合即可命中。
 * **Pro 探索**：单个动作执行前校验目标，被拦截的动作交回 Operator 处理。支持长时间探索和稳定性测试。
 * **AndroidWorld 结果**：在 Google Research **AndroidWorld** 基准评测（100+ 多步任务）中取得 **99%+ 任务完成率**。
 
@@ -294,6 +295,35 @@ ARTEMIS 提供两种运行模式以适应不同的自动化需求：
 
 * **Flash 模式 (`--profile flash`)**：使用历史压缩的响应式循环（单步约 3–5 秒）：单个模型观察实时屏幕、思考、执行，不经过图编排，适合常规确定性 UI 操作。默认不限步数（`agent.flash.max_turns`，0 表示不限），因为历史是被压缩而不是被截断：Flash 与 Pro 共用同一套会话记录账本（相对测试时间 `T+mm:ss`、截图折叠为视觉摘要、更早的步骤分块归档并可通过 `search_history` / `replay_steps` 按需召回），并可调用 `video_analyzer` 分析整段会话录屏；对自动消失的控制栏、toast 等瞬态控件，用 `click_sequence` 把多次点击串成一个原子序列。*局限性*：没有任务计划与笔记、没有执行前安全网、没有检查点校验与最终报告、不能执行 ADB 命令。
 * **Pro 模式 (`--profile pro`)**：包含计划和校验的执行流程（单步约 15–40 秒），由多智能体图编排：**Planner** 维护一份带里程碑和 `verify` / `assert` 检查项的 Markdown 任务计划；**Operator** 按计划执行，拥有全套工具（Explorer 元素定位，其 `flash` / `pro` / `ultra` 三档感知深度是按运行模式设置的用户配置——`config/artemis.jsonc` 里的 `pro.explorer.mode` / `flash.explorer_mode` 或 `--explorer-pro-mode`——智能体自身不会选择档位；笔记、历史召回、视频分析、ADB 诊断）。单个动作执行前都经过 **Safety Net** 校验（XML 优先、像素兜底），而一轮里的多个动作则作为**快速动作序列 (fast-action burst)** 连发，赶在瞬态控件消失前完成操作。动作被拦截或失败时会打开一条**执行事故 (execution incident)**，持续留在 Operator 的上下文里直到后续动作执行成功，恢复由 Operator 自己完成，不再有独立的修复智能体。只读的 **Checker** 校验计划中的检查点，并在退出前对照原始目标做终审（`--verification-level`：`off` / `final`（默认）/ `checkpoints` / `strict`），计划里程碑的改动会得到建议式复核。支持 100+ 步的长程复杂业务流、`[Loop:continuous]` 持续监控以及可选的书面报告。
+
+<a id="laya-decision-engine"></a>
+## ⚡ Laya 决策引擎：毫秒级语义匹配
+
+每一步中，ARTEMIS 都要回答大量微小的相关性问题——*哪个 UI 标签匹配 "power options"？*、*之前哪一步开启过 WiFi？* 完整的 LLM/VLM 回合以秒计，而内置的**决策引擎**以毫秒级回答这些问题，在纯词法匹配失手时挽救换了一种说法的目标，避免升级为代价高昂的视觉定位回合：
+
+* **元素搜索**：当 `search_ui` / `ask_perception_tool` 无结果或不确定时，由当前后端对屏幕上全部标签重新打分，直接给出高置信度的同义匹配（"power options" → "Battery"）。
+* **历史召回**：当 `search_history` 关键词搜索无结果时，改为按语义召回步骤摘要。
+* **升级的词法兜底**：词元 + 字符三元组相似度可以容忍词序（"save battery" ≈ "battery saver"）、填充词和标点差异——即使不配置任何模型也生效。
+
+后端（在 `.env` 中设置 `ARTEMIS_DECISION_BACKEND`；默认 `auto` 不会消耗任何 API 额度）：
+
+| 后端 | 说明 | 成本 / 延迟 |
+| --- | --- | --- |
+| `auto`（默认） | 优先使用在运行的 [Laya](https://github.com/mizorewww/laya-mlx) 服务器，否则本地词法打分 | 免费 · 毫秒级 |
+| `laya` | [laya-mlx](https://github.com/mizorewww/laya-mlx) "System One" 服务器（421M 编码器，每个问题一次前向；Apple Silicon 主机默认服务 `127.0.0.1:8081`，远程主机通过 `ARTEMIS_LAYA_URL` 指定） | 免费 · ~7–15 毫秒/问题 |
+| `openai` | 每次挽救调用一次 OpenAI 兼容接口的选择请求（`OPENAI_API_KEY` / `OPENAI_BASE_URL`，模型 `ARTEMIS_DECISION_OPENAI_MODEL`） | 约每次 0.1 美分 · 亚秒级 |
+| `lexical` / `off` | 仅本地词法打分 / 停用 | 免费 · 微秒级 |
+
+实时查看状态并对样例打分：`uv run artemis laya --benchmark`。
+
+<a id="ai-cursor"></a>
+## 👆 设备端 AI 光标
+
+ARTEMIS 操作手机时，内置的无障碍助手（v1.3.0+）会在设备屏幕上绘制一个**发光的蓝色 "AI" 光标**，标出智能体即将触摸的每一个位置——带弹入动画和扩散的点击圆环。旁观者可以实时看到智能体在看什么、点哪里，演示、调试和验收一目了然。它对所有入口生效（CLI `artemis run`、网页控制台、以及 MCP 工具如 `mobile_run_task`），由后台线程绘制、不增加任何操作延迟，且绝不拦截触摸。
+
+* 关闭：在 `.env` 中设置 `ARTEMIS_AI_CURSOR=false`
+* 需要助手后端（默认层级后端）；`ARTEMIS_HIERARCHY_BACKEND=uiautomator` 时不启用
+* 通过 `TYPE_ACCESSIBILITY_OVERLAY` 绘制——无需悬浮窗权限、不拦截触摸；随时可用 `artemis helper uninstall` 移除助手
 
 ## 路线图
 

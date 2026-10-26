@@ -361,6 +361,23 @@ public class CommandServer extends Thread {
                     String action = params.optString("action", "");
                     resp.put("success", GestureController.performGlobalAction(service, action));
                     break;
+                case "show_cursor":
+                case "cursor": {
+                    float scx = (float) params.optDouble("x", -1.0);
+                    float scy = (float) params.optDouble("y", -1.0);
+                    if (scx < 0 || scy < 0) {
+                        resp.put("success", false);
+                        resp.put("error", "Invalid coordinates");
+                    } else {
+                        CursorOverlay.show(service, scx, scy, params.optLong("duration", 0L));
+                        resp.put("success", true);
+                    }
+                    break;
+                }
+                case "hide_cursor":
+                    CursorOverlay.hide();
+                    resp.put("success", true);
+                    break;
                 default:
                     resp.put("success", false);
                     resp.put("error", "Unknown command: " + cmd);

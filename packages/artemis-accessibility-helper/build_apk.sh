@@ -109,9 +109,18 @@ _tool() {
     exit 1
 }
 AAPT2="$(_tool aapt2)"
-D8="$(_tool d8)"
 ZIPALIGN="$(_tool zipalign)"
-APKSIGNER="$(_tool apksigner)"
+
+# d8.bat / apksigner.bat break when the build-tools path contains spaces (they
+# rebuild the classpath unquoted), so drive the jars through java directly.
+D8_JAR="$BUILD_TOOLS/lib/d8.jar"
+APKSIGNER_JAR="$BUILD_TOOLS/lib/apksigner.jar"
+if [ ! -f "$D8_JAR" ] || [ ! -f "$APKSIGNER_JAR" ]; then
+    echo "Error: d8.jar / apksigner.jar not found under $BUILD_TOOLS/lib" >&2
+    exit 1
+fi
+run_d8() { java -cp "$D8_JAR" com.android.tools.r8.D8 "$@"; }
+run_apksigner() { java -cp "$APKSIGNER_JAR" com.android.apksigner.ApkSignerTool "$@"; }
 
 # 3. Version: single source is app/build.gradle.kts
 VERSION_CODE="$(sed -n 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -n 1)"
@@ -158,7 +167,7 @@ javac -encoding UTF-8 \
 
 echo "-> Dexing with D8..."
 CLASS_FILES="$(find build/obj -name "*.class")"
-"$D8" \
+run_d8 \
     --lib "$PLATFORM/android.jar" \
     --output build/apk/ \
     --min-api 24 \
@@ -183,7 +192,7 @@ if [ ! -f debug.keystore ]; then
         -dname "CN=Artemis Debug,O=Artemis,C=US"
 fi
 
-"$APKSIGNER" sign \
+run_apksigner sign \
     --ks debug.keystore \
     --ks-pass pass:android \
     --key-pass pass:android \
