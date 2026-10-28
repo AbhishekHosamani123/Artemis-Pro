@@ -1,0 +1,6 @@
+.venv/
+models/
+tts_cache/
+*.mp3
+__pycache__/
+

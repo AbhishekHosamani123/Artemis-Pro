@@ -1,0 +1,5 @@
+requests>=2.31.0
+vosk>=0.3.45
+sounddevice>=0.4.6
+edge-tts>=6.1.9
+pygame>=2.5.2
