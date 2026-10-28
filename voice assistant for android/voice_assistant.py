@@ -576,7 +576,7 @@ class AssistantUI:
         return (random.uniform(40, self.W - 40), random.uniform(140, self.H - 46))
 
     def _arrow_pts(self, cx, cy):
-        return [(cx + dx, cy + dy) for dx, dy in ARROW_PTS]
+        return [c for dx, dy in ARROW_PTS for c in (cx + dx, cy + dy)]
 
     def log(self, line: str) -> None:
         stamp = time.strftime("%H:%M:%S")
@@ -654,7 +654,10 @@ class AssistantUI:
             pass
         try:
             while True:
-                self.voice_impl.say(self.say_queue.get_nowait())
+                text = self.say_queue.get_nowait()
+                voice = getattr(self, "voice_impl", None)
+                if voice is not None:
+                    voice.say(text)
         except queue.Empty:
             pass
         self.root.after(110, self._process_queues)
