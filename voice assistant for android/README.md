@@ -18,8 +18,13 @@ keep working exactly as before.
 Speech is transcribed **as words appear** (live partial results) and the command fires
 the moment you pause — no buttons, no waiting.
 
-Replies come in a **cute neural voice** ("Done! What do you want to do next?"),
-and the little marshmallow buddy waves, blinks, and wiggles while talking.
+Replies come in a **cute neural voice** ("Done! What do you want to do next?").
+
+**No mascot/2D model** — the window is a slim console with a live activity log, and a
+classic **desktop-style triangle arrow cursor** is **always visible and moving**:
+it glides around while tasks run, holds still near the question bubble (with a
+fast wiggle + amber outline) whenever the assistant needs your decision, and
+you can watch what stage the agent is at in the ACTIVITY panel.
 
 ## Setup (one time)
 1. Double-click `setup.bat` — creates its own venv, installs deps, downloads the
@@ -39,6 +44,6 @@ and the little marshmallow buddy waves, blinks, and wiggles while talking.
   isn't running yet, it starts it with the main install's venv — read-only, never
   modified. Nothing in `D:\artemis` is changed.
 
-## Handmade icons (no external assets)
-The buddy, arrow cursor and bubble are all drawn on a Tk canvas in
-`voice_assistant.py` (`AssistantUI._draw_static`) — you can recolor or reshape them there.
+## Handmade scenery (no external assets)
+The arrow cursor, bubble and log panel are all drawn on a Tk canvas in
+`voice_assistant.py` (`AssistantUI`) — you can restyle them there.

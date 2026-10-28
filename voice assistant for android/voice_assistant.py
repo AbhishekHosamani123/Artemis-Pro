@@ -2,14 +2,16 @@
 """
 Laya Voice Assistant for Android
 ================================
-Talk to your phone! A cute, always-on-top desktop companion that:
+Talk to your phone! A compact desktop console companion that:
   * Streams your speech to text AS-you-speak (real-time partials)
   * Fires instant phone actions the moment you pause (open camera / apps / home)
-  * Hands complex commands ("search AI engineer jobs on LinkedIn") to the
-    Artemis daemon agent queue (same pipeline MCP uses => MCP unaffected)
+  * Hands complex commands ("search AI engineer jobs on LinkedIn and filter by
+    posted in last 24 hours") to the Artemis daemon agent queue — the same
+    pipeline MCP uses, so the MCP integration stays untouched.
   * Replies in a cute, natural voice (Edge neural TTS, cheerful)
-  * Shows a cute marshmallow-style 2D buddy; when it needs your decision it
-    points at the question bubble with a classic triangle arrow cursor.
+  * Shows a live activity log and a classic **triangle arrow cursor** that is
+    ALWAYS visible and moving — it glides around while tasks run and points
+    (fast wiggle) right at the question bubble whenever it needs your decision.
 
 Run:    python voice_assistant.py             (full voice assistant GUI)
         python voice_assistant.py --text "open camera"
@@ -40,6 +42,13 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+
+# Windows consoles default to cp1252 — emojis in print() would crash threads.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 HERE = Path(__file__).resolve().parent
 MODEL_DIR = HERE / "models"
@@ -250,17 +259,22 @@ class TaskWatcher(threading.Thread):
         self.daemon, self.sid = daemon, session_id
         self.on_done, self.on_fail = on_done, on_fail
         self.on_progress = on_progress or (lambda *_: None)
+        self.last_step_note = ""
 
     def run(self) -> None:
         start = time.monotonic()
         last_status = None
-        while time.monotonic() - start < 420:  # 7 min cap
+        while time.monotonic() - start < 480:  # 8 min cap
             info = self.daemon.session(self.sid)
             if info:
                 status = (info.get("status") or info.get("state") or "").lower()
                 if status and status != last_status:
                     self.on_progress(status)
                     last_status = status
+                phase = (info.get("phase") or info.get("progress") or "")
+                if phase and phase != self.last_step_note:
+                    self.last_step_note = str(phase)
+                    self.on_progress(str(self.last_step_note))
                 if status in ("completed", "success", "passed", "finished"):
                     result = info.get("result") or info.get("final_answer") or ""
                     self.on_done(result)
@@ -335,8 +349,7 @@ class FastRouter:
 
     def try_fast(self, text: str) -> bool:
         """Handle instantly with pure ADB. Returns True when handled."""
-        m = RE_HOME.match(text.strip())
-        if m and self.adb and self.serial:
+        if RE_HOME.match(text.strip()) and self.adb and self.serial:
             try:
                 run_adb(self.adb, ["shell", "input", "keyevent", "KEYCODE_HOME"],
                         timeout=8, serial=self.serial)
@@ -345,8 +358,7 @@ class FastRouter:
             except Exception as e:  # noqa: BLE001
                 print(f"fast home failed: {e}", flush=True)
 
-        m = RE_CAMERA.search(text)
-        if m and self.adb and self.serial:
+        if RE_CAMERA.search(text) and self.adb and self.serial:
             try:
                 run_adb(self.adb, ["shell", "am", "start", "-a", "android.media.action.STILL_CAPTURE_IMAGE"],
                         timeout=8, serial=self.serial)
@@ -451,7 +463,6 @@ class Ears(threading.Thread):
             from vosk import Model, KaldiRecognizer, SetLogLevel
             SetLogLevel(-1)
             if not self.model_path:
-                self.on_final("", True)
                 self.on_final("__nomodel__", True)
                 return
             model = Model(str(self.model_path))
@@ -459,7 +470,7 @@ class Ears(threading.Thread):
             stream = sd.RawInputStream(samplerate=16000, blocksize=4000,
                                        dtype="int16", channels=1)
             stream.start()
-            print("👂 mic running (16 kHz mono) - listening for your voice", flush=True)
+            print("👂 mic running (16 kHz mono) — listening for your voice", flush=True)
             while not self.want_stop:
                 if self.mute_flag.is_set():
                     try:
@@ -487,15 +498,18 @@ class Ears(threading.Thread):
 
 
 # --------------------------------------------------------------------------
-# The cute UI (animated marshmallow buddy + triangle arrow cursor)
+# The UI: live console + ALWAYS-MOVING triangle arrow cursor  (no mascot model)
 # --------------------------------------------------------------------------
 BG = "#101010"
-BODY = "#F3EAD7"
-FACE = "#FAF3E6"
-EYE = "#211D17"
-BLUSH = "#F0C4C8"
-MOUTH = "#7A5140"
-BUBBLE = "#FFFDF7"
+PANEL = "#171717"
+DEEP = "#0b0b0b"
+INK = "#EDE6D8"
+DIM = "#8a8f98"
+ACC = "#5ad1a0"
+WARN = "#f2b35c"
+
+# classic desktop pointer geometry, normalized around its tip (0,0)
+ARROW_PTS = [(0, 0), (0, 22), (7, 16), (13, 28), (18, 26), (12, 14), (20, 14)]
 
 
 class AssistantUI:
@@ -507,119 +521,102 @@ class AssistantUI:
         self.root.title("Laya — Voice Assistant for Android")
         self.root.configure(bg=BG)
         self.root.attributes("-topmost", True)
-        self.root.geometry("460x680+1200+80")
-        self.root.config(cursor="arrow")   # classic triangle pointer, like a PC
-        W, H = 460, 680
+        self.root.geometry("470x470+1230+120")
+        self.root.config(cursor="arrow")   # classic triangle pointer over this app
+        W, H = 470, 470
+        self.W, self.H = W, H
         self.canvas = tk.Canvas(self.root, width=W, height=H, bg=BG, highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
-        self.W, self.H = W, H
 
         self.say_queue: "queue.Queue[str]" = queue.Queue()
         self.ui_queue: "queue.Queue[tuple]" = queue.Queue()
         self.talking = False
-        self.blink_until = time.monotonic() + random.uniform(2.0, 4.0)
-        self.eye_hidden = False
-        self.wave_phase = 0.0
-        self.bob_phase = 0.0
-        self.arrow_id = None
-        self.arrow_visible = False
-        self.arrow_phase = 0.0
-        self._ids: dict[str, int] = {}
+        self.log_lines: list[str] = []
 
-        self._draw_static()
-        self._tick()
+        # --- speech bubble area (top) ---
+        self.canvas.create_rectangle(18, 16, W - 18, 118, fill=PANEL, outline="#2c2c2c")
+        self.bubble_text = self.canvas.create_text(
+            34, 36, anchor="nw",
+            text="Boot me up… then say things like 'open camera', "
+                 "'open LinkedIn and search AI engineer jobs, filter last 24 hours'.",
+            font=("Segoe UI", 10, "bold"), width=W - 70, fill=INK, justify="left")
+        self.urgent_box = None
+
+        # --- activity log (middle) ---
+        self.canvas.create_text(20, 128, anchor="nw", text="ACTIVITY",
+                                font=("Consolas", 9, "bold"), fill=DIM)
+        self.listbox = self.tk.Listbox(self.root, bg=DEEP, fg="#c8d3c2",
+                                       font=("Consolas", 9), relief="flat",
+                                       highlightthickness=0, selectbackground=DEEP,
+                                       activestyle="none")
+        self.listbox.place(x=20, y=146, width=W - 40, height=214)
+
+        # --- status bar (bottom) ---
+        self.canvas.create_rectangle(0, H - 26, W, H, fill=PANEL, outline="")
+        self.status_text = self.canvas.create_text(14, H - 13, anchor="w",
+                                                   text="✨ starting…",
+                                                   font=("Segoe UI", 9), fill=ACC)
+
+        # --- the arrow cursor widget: ALWAYS visible, ALWAYS moving ---
+        self.cx, self.cy = W * 0.6, H * 0.45
+        self.ctarget = self._wander_target()
+        self.arrow_id = self.canvas.create_polygon(
+            *[(self.cx + dx, self.cy + dy) for dx, dy in ARROW_PTS],
+            fill="#ffffff", outline="#141414", width=2)
+        self.urgent = False
+        self.wiggle_phase = 0.0
+
+        self._tick()          # animation loop
         self._process_queues()
+        self.logo_tag = self.canvas.create_text(
+            W - 22, 128, anchor="ne", text="🎙 voice → action", font=("Segoe UI", 9), fill=DIM)
 
-    # ---------------- canvas helpers ----------------
-    def _draw_static(self) -> None:
-        c, W = self.canvas, self.W
-        c.create_oval(150, 600, 310, 626, fill="#1c1c1c", outline="")  # ground shadow
-        parts = []
-        parts.append(c.create_oval(160, 330, 300, 596, fill=BODY, outline=""))          # body
-        parts.append(c.create_oval(150, 186, 310, 430, fill=BODY, outline=""))          # hood dome
-        parts.append(c.create_oval(197, 252, 263, 356, fill=FACE, outline=""))          # face patch
-        parts.append(c.create_line(294, 356, 347, 306, smooth=True, width=26,
-                                   fill=BODY, capstyle="round", tags="arm"))           # waving arm
-        parts.append(c.create_oval(322, 277, 362, 317, fill=BODY, outline="", tags="armhand"))
-        parts.append(c.create_line(168, 366, 138, 428, smooth=True, width=24,
-                                   fill=BODY, capstyle="round"))                       # left arm
-        parts.append(c.create_oval(118, 414, 158, 446, fill=BODY, outline=""))
-        parts.append(c.create_oval(196, 580, 236, 606, fill=BODY, outline=""))          # feet
-        parts.append(c.create_oval(228, 580, 268, 606, fill=BODY, outline=""))
-        self._ids["parts"] = parts
-        # face bits
-        self._ids["eyeL"] = c.create_oval(214, 288, 225, 300, fill=EYE, outline="")
-        self._ids["eyeR"] = c.create_oval(237, 288, 248, 300, fill=EYE, outline="")
-        self._ids["gL"] = c.create_oval(216, 290, 219, 293, fill="#fff", outline="")
-        self._ids["gR"] = c.create_oval(239, 290, 242, 293, fill="#fff", outline="")
-        self._ids["blushL"] = c.create_oval(204, 310, 217, 319, fill=BLUSH, outline="")
-        self._ids["blushR"] = c.create_oval(244, 310, 257, 319, fill=BLUSH, outline="")
-        self._ids["mouth"] = c.create_arc(220, 306, 244, 322, start=205, extent=130,
-                                          style="arc", outline=MOUTH, width=3)
-        # speech bubble
-        c.create_oval(38, 26, 422, 186, fill=BUBBLE, outline="#e7dcc4", width=2)
-        tail = c.create_polygon(213, 184, 231, 214, 247, 184, fill=BUBBLE, outline="#e7dcc4")
-        c.tag_lower(tail)
-        self._ids["bubble_text"] = c.create_text(
-            230, 104,
-            text=("👋 Hi! I'm Laya, your cute assistant.\n"
-                  "Just say things like: 'open camera',\n"
-                  "'open LinkedIn', or 'open LinkedIn and\n"
-                  "search AI engineer jobs'.\nDon't forget to say 'Done' 😉"),
-            font=("Segoe UI", 11, "bold"), width=350, justify="center")
-        # mic level strip + status
-        self._ids["micbar"] = c.create_rectangle(40, 620, 160, 630, fill="#1d1d1d", outline="#333")
-        self._ids["status"] = c.create_text(330, 625, text="✨ booting up…",
-                                            font=("Segoe UI", 10), fill="#9ad07f")
+    # ---- pointer helpers ----
+    def _wander_target(self):
+        return (random.uniform(40, self.W - 40), random.uniform(140, self.H - 46))
+
+    def _arrow_pts(self, cx, cy):
+        return [(cx + dx, cy + dy) for dx, dy in ARROW_PTS]
+
+    def log(self, line: str) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        self.log_lines.append(f"{stamp}  {line}")
+        if len(self.log_lines) > 400:
+            self.log_lines = self.log_lines[-400:]
+        self.listbox.delete(0, "end")
+        for ln in self.log_lines[-120:]:
+            self.listbox.insert("end", ln)
+        self.listbox.see("end")
 
     # ---------------- animation ----------------
     def _tick(self) -> None:
-        t = time.monotonic()
-        self.wave_phase += 0.16
-        self.bob_phase += 0.05
-        bob = math.sin(self.bob_phase) * 2.5
-        sway = math.sin(self.bob_phase) * 1.2
-        swing = math.sin(self.wave_phase) * 16
-        self.canvas.coords("arm", 294 + sway, 356 + bob, 347 + swing * 0.3, 306 - abs(swing) * 0.65 + bob)
-        self.canvas.coords("armhand", 322 + swing * 0.35, 277 - abs(swing) * 0.8 + bob,
-                           362 + swing * 0.35, 317 - abs(swing) * 0.8 + bob)
-        # blink
-        if t > self.blink_until and not self.eye_hidden:
-            self.blink_until = t + 0.15
-            self.eye_hidden = True
-            for k in ("eyeL", "eyeR", "gL", "gR"):
-                self.canvas.itemconfigure(self._ids[k], state="hidden")
-        elif t > self.blink_until and self.eye_hidden:
-            self.blink_until = t + random.uniform(2.4, 5.2)
-            self.eye_hidden = False
-            for k in ("eyeL", "eyeR", "gL", "gR"):
-                self.canvas.itemconfigure(self._ids[k], state="normal")
-        # mouth: talking bobble vs gentle smile
-        self.canvas.delete("mO")
-        if self.talking and int(t * 10) % 2:
-            self.canvas.create_oval(224, 307, 240, 320, fill=MOUTH, outline="", tags="mO")
-            self.canvas.itemconfigure(self._ids["mouth"], state="hidden")
-        else:
-            self.canvas.itemconfigure(self._ids["mouth"], state="normal")
-        # triangle arrow cursor (desktop-PC style pointer)
-        if self.arrow_visible:
-            self.arrow_phase += 0.25
-            wig = int(math.sin(self.arrow_phase) * 7)
-            tip_x, tip_y = (206 + wig, 196 + bob)
-            pts = [tip_x, tip_y, tip_x, tip_y + 32, tip_x + 12, tip_y + 22,
-                   tip_x + 22, tip_y + 42, tip_x + 31, tip_y + 38, tip_x + 21,
-                   tip_y + 19, tip_x + 33, tip_y + 15]
-            if self.arrow_id is None:
-                self.arrow_id = self.canvas.create_polygon(
-                    pts, fill="#ffffff", outline="#222", width=2, tags="arrowcur")
+        # glide toward current target
+        tx, ty = self.ctarget
+        dx, dy = tx - self.cx, ty - self.cy
+        dist = math_hyp = (dx * dx + dy * dy) ** 0.5
+        speed = 3.4 if self.urgent else (1.1 + random.random() * 0.6)
+        if dist < 4:
+            if self.urgent:
+                pass  # stay pinned near the question
             else:
-                self.canvas.coords(self.arrow_id, *pts)
-        elif self.arrow_id is not None:
-            self.canvas.delete("arrowcur")
-            self.arrow_id = None
-        self.root.after(60, self._tick)
+                self.ctarget = self._wander_target()
+        else:
+            self.cx += dx * min(1.0, speed / max(dist, 0.001))
+            self.cy += dy * min(1.0, speed / max(dist, 0.001))
+        # wiggle when speaking / urgent
+        self.wiggle_phase += 0.4 if (self.urgent or self.talking) else 0.12
+        wig = math.sin(self.wiggle_phase) * (4 if self.urgent else 2)
+        self.canvas.coords(self.arrow_id, *self._arrow_pts(self.cx + wig, self.cy))
+        # urgent highlight around the bubble
+        if self.urgent and self.urgent_box is None:
+            self.urgent_box = self.canvas.create_rectangle(
+                14, 12, self.W - 14, 122, outline=WARN, width=2)
+        elif not self.urgent and self.urgent_box is not None:
+            self.canvas.delete(self.urgent_box)
+            self.urgent_box = None
+        self.root.after(30, self._tick)
 
-    # ---------------- public API (thread-safe via queue) ----------------
+    # ---------------- public API (thread-safe via queues) ----------------
     def reply(self, text: str, instant: bool = False, needs_help: bool = False) -> None:
         self.ui_queue.put(("bubble", text, needs_help))
         self.say_queue.put(text)
@@ -639,34 +636,35 @@ class AssistantUI:
                 ev = self.ui_queue.get_nowait()
                 kind = ev[0]
                 if kind == "bubble":
-                    self.canvas.itemconfigure(self._ids["bubble_text"], text="🧚 " + ev[1])
-                    self.arrow_visible = bool(ev[2])
-                    if self.arrow_visible:
-                        self.arrow_phase = 0.0
+                    self.canvas.itemconfigure(self.bubble_text, text=ev[1])
+                    self.urgent = bool(ev[2])       # AI needs a decision → cursor points here
+                    self.log(f"🧚 {ev[1]}")
+                    if self.urgent:
+                        self.ctarget = (self.W * 0.78, 108)   # point at the bubble
                 elif kind == "partial":
                     if ev[1]:
-                        self.canvas.itemconfigure(self._ids["bubble_text"], text="🎤 you: " + ev[1])
-                        self.arrow_visible = False
+                        self.canvas.itemconfigure(self.bubble_text, text="🎤 you: " + ev[1])
+                        self.log(f"🎤 {ev[1]}")
                 elif kind == "status":
-                    self.canvas.itemconfigure(self._ids["status"], text=ev[1])
+                    self.canvas.itemconfigure(self.status_text, text=ev[1])
+                    self.log(f"• {ev[1]}")
                 elif kind == "talking":
                     self.talking = bool(ev[1])
         except queue.Empty:
             pass
         try:
             while True:
-                text = self.say_queue.get_nowait()
-                self.voice_impl.say(text)
+                self.voice_impl.say(self.say_queue.get_nowait())
         except queue.Empty:
             pass
-        self.root.after(120, self._process_queues)
+        self.root.after(110, self._process_queues)
 
     def bootstrap(self, voice: CuteVoice, mute_flag: threading.Event) -> None:
         self.voice_impl = voice
 
         def start_talk():
             self.talk(True)
-            mute_flag.set()          # don't listen to own cute voice
+            mute_flag.set()          # don't listen to my own cute voice
 
         def end_talk():
             self.talk(False)
@@ -676,7 +674,7 @@ class AssistantUI:
 
 
 # --------------------------------------------------------------------------
-# Orchestrator: ears → router / daemon → cute voice + GUI
+# Orchestrator: ears → router / daemon → cute voice + console UI
 # --------------------------------------------------------------------------
 class Assistant:
     def __init__(self, cfg: dict, text_mode: str | None):
@@ -712,20 +710,21 @@ class Assistant:
             devs = list_devices(self.adb)
             if devs:
                 self.serial = self.serial or devs[0]
-                dev_note = f"   📱 {self.serial}"
+                dev_note = f"  📱 {self.serial}"
             else:
-                dev_note = "   ⚠ no phone detected"
+                dev_note = "  ⚠ no phone detected"
         else:
-            dev_note = "   ⚠ adb missing — only agent tasks will work"
+            dev_note = "  ⚠ adb missing — only agent tasks will work"
         self.router.serial = self.serial
         self.router.refresh_packages()
-        self.ready = ok or not self.cfg.get("auto_start_daemon", True)
+        self.ready = ok
         if ok:
-            self.ui.status(f"🟢 Artemis ready{dev_note}")
+            self.ui.status(f"🟢 Artemis ready{dev_note}   🎙 ready")
         else:
-            self.ready = False
             self.ui.status(f"🔴 daemon down{dev_note}")
-        self.ui.ready = self.ready
+        self.ui.reply("I'm ready! Just say what you want on your phone — "
+                      "for example: 'open LinkedIn and search AI engineer jobs, "
+                      "filter posted last 24 hours'.", instant=True)
 
     # ---- voice path ----
     def _start_mic(self) -> None:
@@ -735,8 +734,8 @@ class Assistant:
                     mute_flag=self.mute_flag, model_dir=model)
         ears.start()
         threading.Thread(target=self.voice.say,
-                         args=("Hi! I'm Laya! Tell me what to do — like open camera, "
-                               "or open LinkedIn and search AI engineer jobs!",),
+                         args=("Hi! I'm Laya! Tell me what to do — like open camera, or "
+                               "open LinkedIn and search AI engineer jobs!",),
                          daemon=True).start()
 
     def _on_partial(self, text: str) -> None:
@@ -783,8 +782,8 @@ class Assistant:
         # 2) hand the full command to the Artemis agent via the daemon
         self.busy_task = True
         self.voice.say("Getting on it right away!")
-        self.ui.reply(f"🤖 On it! '{text}' — working on your phone now…")
-        self.ui.status(f"🤖 task running…   📱 {self.serial or '?'}")
+        self.ui.reply(f"🤖 On it! '{text}' — follow the moving cursor!")
+        self.ui.status(f"🤖 task running…  📱 {self.serial or '?'}")
         resp = self.daemon.submit(goal=text, device_serial=self.serial,
                                   profile=self.cfg.get("task_profile", "flash"))
         if not resp:
@@ -798,22 +797,22 @@ class Assistant:
             self.ui.reply("I queued it but the answer looked odd — let's try again!", needs_help=True)
             return
         self.current_sid = sid
+        self.ui.log(f"task id: {sid}")
         TaskWatcher(self.daemon, sid, on_done=self._task_done, on_fail=self._task_fail,
                     on_progress=self._task_progress).start()
 
-    def _task_progress(self, status: str) -> None:
-        pretty = {"queued": "⏳ queued", "running": "🏃 running…"}
-        self.ui.status(f"🤖 {pretty.get(status, status)}   📱 {self.serial or '?'}")
+    def _task_progress(self, note: str) -> None:
+        self.ui.log(f"... {note}")
 
     def _task_done(self, result: str) -> None:
         self.busy_task = False
         short = (result or "").strip()
-        if len(short) > 170:
-            short = short[:167] + "…"
+        if len(short) > 150:
+            short = short[:147] + "…"
         msg = (f"Done! {short} — what do you want to do next?" if short
                else "Done! What do you want to do next?")
         self.ui.reply(msg)
-        self.ui.status("🟢 idle   ✨ ready for next command")
+        self.ui.status("🟢 idle  ✨ ready for next command")
 
     def _task_fail(self, err: str) -> None:
         self.busy_task = False
@@ -845,11 +844,11 @@ class Assistant:
             self.ui.root.after(0, self.ui.root.destroy)
             return
         if cmd == "__say__":
-            self.ui.reply("Hello! I am Laya, your cute voice assistant. I am ready!")
+            self.ui.reply("Hello! I am Laya, your voice assistant. I am ready!")
         else:
             self.handle_command(cmd)
-        # give TTS + task a moment, then close
-        deadline = time.monotonic() + 540
+        # wait for task to settle (long agent jobs), then exit
+        deadline = time.monotonic() + 560
         while time.monotonic() < deadline:
             if not self.busy_task:
                 time.sleep(14)
@@ -898,7 +897,7 @@ def main() -> int:
         voice = CuteVoice(cfg)
         voice.on_talk_start = lambda: print("🔊 speaking…", flush=True)
         voice.on_talk_end = lambda: print("🔊 done.", flush=True)
-        voice.say("Hello! I am Laya, your cute voice assistant. Everything is ready — "
+        voice.say("Hello! I am Laya, your voice assistant. Everything is ready — "
                   "what do you want to do next?")
         try:
             while True:
