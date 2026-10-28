@@ -371,17 +371,25 @@ class FastRouter:
 
         m = RE_OPEN.match(text.strip())
         if m and self.adb and self.serial:
-            pkg = self._resolve(m.group(1))
-            if pkg:
-                try:
-                    run_adb(self.adb, ["shell", "monkey", "-p", pkg,
-                                       "-c", "android.intent.category.LAUNCHER", "1"],
-                            timeout=12, serial=self.serial)
-                    app_name = m.group(1).strip().title()
-                    self.ui.reply(f"⚡ {app_name} is open! What do you want to do next?", instant=True)
-                    return True
-                except Exception as e:  # noqa: BLE001
-                    print(f"open fast-path failed: {e}", flush=True)
+            app_name = m.group(1).strip()
+            # ONLY treat as instant app-open when the phrase is JUST an app name.
+            # Compound commands ("open linkedin and search ai engineer jobs")
+            # must fall through to the agent.
+            compound = re.search(
+                r"\b(and|search|find|filter|watch|play|tap|click|type|scroll|"
+                r"job|jobs|image|images|photo|video|send|message)\b", app_name, re.I)
+            if len(app_name.split()) <= 3 and not compound:
+                pkg = self._resolve(app_name)
+                if pkg:
+                    try:
+                        run_adb(self.adb, ["shell", "monkey", "-p", pkg,
+                                           "-c", "android.intent.category.LAUNCHER", "1"],
+                                timeout=12, serial=self.serial)
+                        self.ui.reply(f"⚡ {app_name.title()} is open! "
+                                      "What do you want to do next?", instant=True)
+                        return True
+                    except Exception as e:  # noqa: BLE001
+                        print(f"open fast-path failed: {e}", flush=True)
         return False
 
 
